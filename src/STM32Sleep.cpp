@@ -1,15 +1,35 @@
 #include "STM32Sleep.h"
 #include <libmaple/pwr.h>
 #include <libmaple/scb.h>
-
 static void noop() {};
-
+#include "Arduino.h"
 
 void sleepAndWakeUp(SleepMode mode, RTClock *rt, uint8_t seconds) {
-  rt->createAlarm(&noop, rt->getTime() + seconds);
-  goToSleep(mode);
+    rt->createAlarm(&noop, rt->getTime() + seconds);
+    sleepAndWakeUp(mode);
 }
 
+void sleepAndWakeUp(SleepMode mode)
+{
+    //RM0008, §5.4.2: WKUP pin is used for wakeup from Standby mode and forced in input pull down configuration
+    //(rising edge on WKUP pin wakes-up the system from Standby mode).
+    PWR_BASE->CSR |=  PWR_CSR_EWUP;
+    goToSleep(mode);
+}
+
+/*Returns the last operating status of the MCU before waking up.
+ * If the MCU was in standby mode and WKUP goes high -> return true
+ * If the MCU was in standby mode and RST pin is toggled -> return true
+ * If the MCU was in normal operating mode and RST pin is toggled -> return false
+ */
+bool wokeUpFromStandby()
+{
+    bool bRet=bitRead(PWR_BASE->CSR, PWR_CSR_SBF_BIT);
+    bitSet(PWR_BASE->CR, PWR_CR_CSBF_BIT);
+    return bRet;
+}
+
+//RM0008, §5.3.5:
 void goToSleep(SleepMode mode) {
     // Clear PDDS and LPDS bits
     PWR_BASE->CR &= ~PWR_CR_PDDS;
@@ -18,17 +38,25 @@ void goToSleep(SleepMode mode) {
     // Clear previous wakeup register
     PWR_BASE->CR |= PWR_CR_CWUF;
 
-    if (mode == STANDBY) {
-      PWR_BASE->CR |= PWR_CR_PDDS;
+    switch(mode)
+    {
+    case STANDBY:
+        //RM0008, §5.4.1: Enter Standby mode when the CPU enters Deepsleep.
+        PWR_BASE->CR |= PWR_CR_PDDS;
+        break;
+    case STOP:
+        //RM0008, §5.4.1: Voltage regulator in low-power mode during Stop mode
+        PWR_BASE->CR |= PWR_CR_LPDS;
+        break;
     }
 
-    PWR_BASE->CR |= PWR_CR_LPDS;
-
+    //Cortex M3 System control register
     SCB_BASE->SCR |= SCB_SCR_SLEEPDEEP;
 
     // Now go into stop mode, wake up on interrupt
-    asm("    wfi");  
+    asm("    wfi");
 }
+
 
 void disableAllPeripheralClocks() {
     // Disable all peripheral clocks
@@ -81,19 +109,19 @@ void disableAllPeripheralClocks() {
 }
 
 void setGPIOModeToAllPins(gpio_pin_mode mode) {
-  for(uint8_t i = 0; i < 16; i++) {
-    gpio_set_mode(GPIOA, i, mode);
-    gpio_set_mode(GPIOB, i, mode);
-    gpio_set_mode(GPIOC, i, mode);
-  }
+    for(uint8_t i = 0; i < 16; i++) {
+        gpio_set_mode(GPIOA, i, mode);
+        gpio_set_mode(GPIOB, i, mode);
+        gpio_set_mode(GPIOC, i, mode);
+    }
 }
 
 void switchToPLLwithHSE(rcc_pll_multiplier pllMultiplier) {
-  rcc_turn_on_clk(RCC_CLK_HSI);
-  while (!rcc_is_clk_ready(RCC_CLK_HSI))
-      ;
-  rcc_switch_sysclk(RCC_CLKSRC_HSI);
-  rcc_turn_off_clk(RCC_CLK_HSE);
-  rcc_turn_off_clk(RCC_CLK_PLL);
-  rcc_clk_init(RCC_CLKSRC_PLL, RCC_PLLSRC_HSE, RCC_PLLMUL_2);
+    rcc_turn_on_clk(RCC_CLK_HSI);
+    while (!rcc_is_clk_ready(RCC_CLK_HSI))
+        ;
+    rcc_switch_sysclk(RCC_CLKSRC_HSI);
+    rcc_turn_off_clk(RCC_CLK_HSE);
+    rcc_turn_off_clk(RCC_CLK_PLL);
+    rcc_clk_init(RCC_CLKSRC_PLL, RCC_PLLSRC_HSE, RCC_PLLMUL_2);
 }
